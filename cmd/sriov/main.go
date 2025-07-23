@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"runtime"
 
 	"github.com/containernetworking/cni/pkg/skel"
@@ -153,7 +154,25 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if err = utils.SaveNetConf(args.ContainerID, config.DefaultCNIDir, args.IfName, netConf); err != nil {
 		return fmt.Errorf("error saving NetConf %q", err)
 	}
+	if netConf.Smc {
+		// 执行 modprobe smc
+		if err := exec.Command("modprobe", "smc").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe smc: %v", err)
+		}
+		// 执行 modprobe smc_diag
+		if err := exec.Command("modprobe", "smc_diag").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
+		}
+		// 执行 sysctl net.smc.tcp2smc=1
+		if err := exec.Command("sysctl", "net.smc.tcp2smc=1").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
+		// 执行 net.ipv6.conf.all.disable_ipv6=1
+		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=1").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
 
+	}
 	return types.PrintResult(result, current.ImplementedSpecVersion)
 }
 
@@ -208,7 +227,25 @@ func cmdDel(args *skel.CmdArgs) error {
 	if err := sm.ResetVFConfig(netConf); err != nil {
 		return fmt.Errorf("cmdDel() error reseting VF: %q", err)
 	}
-
+	if netConf.Smc {
+		// 执行 sysctl net.smc.tcp2smc=0
+		if err := exec.Command("sysctl", "net.smc.tcp2smc=0").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=0: %v", err)
+		}
+		// 如果需要，可以执行其他清理命令，例如：
+		// 执行 modprobe -r smc_diag
+		if err := exec.Command("modprobe", "-r", "smc_diag").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe -r smc_diag: %v", err)
+		}
+		// 执行 modprobe -r smc
+		if err := exec.Command("modprobe", "-r", "smc").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe -r smc: %v", err)
+		}
+		// 执行 net.ipv6.conf.all.disable_ipv6=1
+		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=0").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
+	}
 	return nil
 }
 
