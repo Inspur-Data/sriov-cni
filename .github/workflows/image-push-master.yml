@@ -1,122 +1,59 @@
 name: "Push images on merge to master"
 
 env:
-  IMAGE_NAME:  registry.cn-hangzhou.aliyuncs.com/testwydimage
+  # 1. 正确分离 Registry 地址和镜像路径
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  IMAGE_NAMESPACE: testwydimage # 你的阿里云命名空间
+  IMAGE_NAME: sriov-cni         # 你的镜像名
+
 on:
   push:
     branches:
       - master
-  workflow_dispatch:    #手动触发；这样在workflow对应的Action都会有相应的envent trigger
+  workflow_dispatch:
     inputs:
       run_e2e:
         description: 'Force e2e to run'
         required: false
         type: boolean
+
 jobs:
-  build-and-push-amd64-sriov-cni:
-    name: Image Push AMD64
+  # 2. 合并为一个统一的构建和推送 Job
+  build-and-push-multi-arch:
+    name: Build and Push Multi-Arch Image
     runs-on: ubuntu-20.04
     steps:
       - name: Check out the repo
         uses: actions/checkout@v3
 
+      # 3. 设置 QEMU 以支持跨平台构建
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      # 4. 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      - name: Login to Docker
+      # 5. 使用正确的 Registry 地址登录
+      - name: Login to Aliyun Container Registry
         uses: docker/login-action@v2
         with:
-          registry: registry.cn-hangzhou.aliyuncs.com/testwydimage
+          registry: ${{ env.REGISTRY }}
           username: ${{ secrets.USERNAME_ALI }}
           password: ${{ secrets.PASSWORD_ALI }}
 
-      - name: Build and push sriov-cni
+      # 6. 在一个步骤中构建、推送并创建 manifest
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          # 在这里一次性指定所有目标平台
+          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          # buildx 会自动为这些标签创建和推送 manifest list
           tags: |
-            ${{ env.IMAGE_NAME }}:latest-amd64
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # 假设您已将多个 Dockerfile 合并为一个
+          # 如果无法合并，您可能需要考虑使用 build matrix 策略
           file: ./Dockerfile
-
-  build-and-push-arm64-sriov-cni:
-    name: Image Push ARM64
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Check out the repo
-        uses: actions/checkout@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Docker
-        uses: docker/login-action@v2
-        with:
-          registry: registry.cn-hangzhou.aliyuncs.com/testwydimage
-          username: ${{ secrets.USERNAME_ALI }}
-          password: ${{ secrets.PASSWORD_ALI }}
-
-      - name: Build and push sriov-cni
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          platforms: linux/arm64
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest-arm64
-          file: ./Dockerfile.arm64
-
-  build-and-push-ppc64le-sriov-cni:
-    name: Image Push ppc64le
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Check out the repo
-        uses: actions/checkout@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Login to Docker
-        uses: docker/login-action@v2
-        with:
-          registry: registry.cn-hangzhou.aliyuncs.com/testwydimage
-          username: ${{ secrets.USERNAME_ALI }}
-          password: ${{ secrets.PASSWORD_ALI }}
-      - name: Build and push sriov-cni
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          platforms: linux/ppc64le
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest-ppc64le
-          file: ./Dockerfile.ppc64le
-
-  push-manifest:
-    runs-on: ubuntu-20.04
-    needs: [build-and-push-amd64-sriov-cni,build-and-push-arm64-sriov-cni,build-and-push-ppc64le-sriov-cni]
-    steps:
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
-
-    - name: Login to GitHub Container Registry
-      uses: docker/login-action@v2
-      with:
-        registry: registry.cn-hangzhou.aliyuncs.com/testwydimage
-        username: ${{ secrets.USERNAME_ALI }}
-        password: ${{ secrets.PASSWORD_ALI }}
-
-    - name: Create manifest for multi-arch images
-      run: |
-        docker buildx imagetools create -t ${{ env.IMAGE_NAME }}:latest \
-        ${{ env.IMAGE_NAME }}:latest-amd64 \
-        ${{ env.IMAGE_NAME }}:latest-arm64 \
-        ${{ env.IMAGE_NAME }}:latest-ppc64le
