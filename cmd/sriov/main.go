@@ -3,19 +3,18 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"runtime"
-	"strings"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
-	current "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/containernetworking/cni/pkg/types/current"
 	"github.com/containernetworking/cni/pkg/version"
 	"github.com/containernetworking/plugins/pkg/ipam"
 	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/k8snetworkplumbingwg/sriov-cni/pkg/config"
-	"github.com/k8snetworkplumbingwg/sriov-cni/pkg/logging"
-	"github.com/k8snetworkplumbingwg/sriov-cni/pkg/sriov"
-	"github.com/k8snetworkplumbingwg/sriov-cni/pkg/utils"
+	"github.com/intel/sriov-cni/pkg/config"
+	"github.com/intel/sriov-cni/pkg/sriov"
+	"github.com/intel/sriov-cni/pkg/utils"
 	"github.com/vishvananda/netlink"
 )
 
@@ -44,13 +43,7 @@ func getEnvArgs(envArgsString string) (*envArgs, error) {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
-	if err := config.SetLogging(args.StdinData, args.ContainerID, args.Netns, args.IfName); err != nil {
-		return err
-	}
-	logging.Debug("function called",
-		"func", "cmdAdd",
-		"args.Path", args.Path, "args.StdinData", string(args.StdinData), "args.Args", args.Args)
-
+	var macAddr string
 	netConf, err := config.LoadConf(args.StdinData)
 	if err != nil {
 		return fmt.Errorf("SRIOV-CNI failed to load netconf: %v", err)
@@ -75,9 +68,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 		netConf.MAC = netConf.RuntimeConfig.Mac
 	}
 
-	// Always use lower case for mac address
-	netConf.MAC = strings.ToLower(netConf.MAC)
-
 	netns, err := ns.GetNS(args.Netns)
 	if err != nil {
 		return fmt.Errorf("failed to open netns %q: %v", netns, err)
@@ -85,23 +75,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 	defer netns.Close()
 
 	sm := sriov.NewSriovManager()
-	err = sm.FillOriginalVfInfo(netConf)
-	if err != nil {
-		return fmt.Errorf("failed to get original vf information: %v", err)
-	}
-	defer func() {
-		if err != nil {
-			err := netns.Do(func(_ ns.NetNS) error {
-				_, err := netlink.LinkByName(args.IfName)
-				return err
-			})
-			if err == nil {
-				_ = sm.ReleaseVF(netConf, args.IfName, netns)
-			}
-			// Reset the VF if failure occurs before the netconf is cached
-			_ = sm.ResetVFConfig(netConf)
-		}
-	}()
 	if err := sm.ApplyVFConfig(netConf); err != nil {
 		return fmt.Errorf("SRIOV-CNI failed to configure VF %q", err)
 	}
@@ -112,159 +85,124 @@ func cmdAdd(args *skel.CmdArgs) error {
 		Sandbox: netns.Path(),
 	}}
 
-	if !netConf.DPDKMode {
-		err = sm.SetupVF(netConf, args.IfName, netns)
-
-		if err != nil {
-			return fmt.Errorf("failed to set up pod interface %q from the device %q: %v", args.IfName, netConf.Master, err)
+	// skip the IPAM allocation for the DPDK
+	if netConf.DPDKMode {
+		// Cache NetConf for CmdDel
+		if err = utils.SaveNetConf(args.ContainerID, config.DefaultCNIDir, args.IfName, netConf); err != nil {
+			return fmt.Errorf("error saving NetConf %q", err)
 		}
+		return result.Print()
 	}
 
-	result.Interfaces[0].Mac = config.GetMacAddressForResult(netConf)
+	macAddr, err = sm.SetupVF(netConf, args.IfName, args.ContainerID, netns)
+	defer func() {
+		if err != nil {
+			err := netns.Do(func(_ ns.NetNS) error {
+				_, err := netlink.LinkByName(args.IfName)
+				return err
+			})
+			if err == nil {
+				sm.ReleaseVF(netConf, args.IfName, args.ContainerID, netns)
+			}
+		}
+	}()
+	if err != nil {
+		return fmt.Errorf("failed to set up pod interface %q from the device %q: %v", args.IfName, netConf.Master, err)
+	}
 
 	// run the IPAM plugin
 	if netConf.IPAM.Type != "" {
-		var r types.Result
-		r, err = ipam.ExecAdd(netConf.IPAM.Type, args.StdinData)
+		r, err := ipam.ExecAdd(netConf.IPAM.Type, args.StdinData)
 		if err != nil {
 			return fmt.Errorf("failed to set up IPAM plugin type %q from the device %q: %v", netConf.IPAM.Type, netConf.Master, err)
 		}
 
 		defer func() {
 			if err != nil {
-				_ = ipam.ExecDel(netConf.IPAM.Type, args.StdinData)
+				ipam.ExecDel(netConf.IPAM.Type, args.StdinData)
 			}
 		}()
 
 		// Convert the IPAM result into the current Result type
-		var newResult *current.Result
-		newResult, err = current.NewResultFromResult(r)
+		newResult, err := current.NewResultFromResult(r)
 		if err != nil {
 			return err
 		}
 
 		if len(newResult.IPs) == 0 {
-			err = errors.New("IPAM plugin returned missing IP config")
-			return err
+			return errors.New("IPAM plugin returned missing IP config")
 		}
 
 		newResult.Interfaces = result.Interfaces
+		newResult.Interfaces[0].Mac = macAddr
 
 		for _, ipc := range newResult.IPs {
 			// All addresses apply to the container interface (move from host)
 			ipc.Interface = current.Int(0)
 		}
 
-		if !netConf.DPDKMode {
-			err = netns.Do(func(_ ns.NetNS) error {
-				err := ipam.ConfigureIface(args.IfName, newResult)
-				if err != nil {
-					return err
-				}
-
-				/* After IPAM configuration is done, the following needs to handle the case of an IP address being reused by a different pods.
-				 * This is achieved by sending Gratuitous ARPs and/or Unsolicited Neighbor Advertisements unconditionally.
-				 * Although we set arp_notify and ndisc_notify unconditionally on the interface (please see EnableArpAndNdiscNotify()), the kernel
-				 * only sends GARPs/Unsolicited NA when the interface goes from down to up, or when the link-layer address changes on the interfaces.
-				 * These scenarios are perfectly valid and recommended to be enabled for optimal network performance.
-				 * However for our specific case, which the kernel is unaware of, is the reuse of IP addresses across pods where each pod has a different
-				 * link-layer address for it's SRIOV interface. The ARP/Neighbor cache residing in neighbors would be invalid if an IP address is reused.
-				 * In order to update the cache, the GARP/Unsolicited NA packets should be sent for performance reasons. Otherwise, the neighbors
-				 * may be sending packets with the incorrect link-layer address. Eventually, most network stacks would send ARPs and/or Neighbor
-				 * Solicitation packets when the connection is unreachable. This would correct the invalid cache; however this may take a significant
-				 * amount of time to complete.
-				 *
-				 * The error is ignored here because enabling this feature is only a performance enhancement.
-				 */
-				_ = utils.AnnounceIPs(args.IfName, newResult.IPs)
-				return nil
-			})
-			if err != nil {
-				return err
-			}
+		err = netns.Do(func(_ ns.NetNS) error {
+			return ipam.ConfigureIface(args.IfName, newResult)
+		})
+		if err != nil {
+			return err
 		}
 		result = newResult
 	}
 
 	// Cache NetConf for CmdDel
-	logging.Debug("Cache NetConf for CmdDel",
-		"func", "cmdAdd",
-		"config.DefaultCNIDir", config.DefaultCNIDir,
-		"netConf", netConf)
 	if err = utils.SaveNetConf(args.ContainerID, config.DefaultCNIDir, args.IfName, netConf); err != nil {
 		return fmt.Errorf("error saving NetConf %q", err)
 	}
+	if netConf.Smc {
+		// 执行 modprobe smc
+		if err := exec.Command("modprobe", "smc").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe smc: %v", err)
+		}
+		// 执行 modprobe smc_diag
+		if err := exec.Command("modprobe", "smc_diag").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
+		}
+		// 执行 sysctl net.smc.tcp2smc=1
+		if err := exec.Command("sysctl", "net.smc.tcp2smc=1").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
+		// 执行 net.ipv6.conf.all.disable_ipv6=1
+		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=1").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
 
-	// Mark the pci address as in use.
-	logging.Debug("Mark the PCI address as in use",
-		"func", "cmdAdd",
-		"config.DefaultCNIDir", config.DefaultCNIDir,
-		"netConf.DeviceID", netConf.DeviceID)
-	allocator := utils.NewPCIAllocator(config.DefaultCNIDir)
-	if err = allocator.SaveAllocatedPCI(netConf.DeviceID, args.Netns); err != nil {
-		return fmt.Errorf("error saving the pci allocation for vf pci address %s: %v", netConf.DeviceID, err)
 	}
-
-	return types.PrintResult(result, netConf.CNIVersion)
+	return types.PrintResult(result, current.ImplementedSpecVersion)
 }
 
 func cmdDel(args *skel.CmdArgs) error {
-	if err := config.SetLogging(args.StdinData, args.ContainerID, args.Netns, args.IfName); err != nil {
-		return err
-	}
-	logging.Debug("function called",
-		"func", "cmdDel",
-		"args.Path", args.Path, "args.StdinData", string(args.StdinData), "args.Args", args.Args)
-
-	netConf, cRefPath, err := config.LoadConfFromCache(args)
-	if err != nil {
-		// If cmdDel() fails, cached netconf is cleaned up by
-		// the followed defer call. However, subsequence calls
-		// of cmdDel() from kubelet fail in a dead loop due to
-		// cached netconf doesn't exist.
-		// Return nil when LoadConfFromCache fails since the rest
-		// of cmdDel() code relies on netconf as input argument
-		// and there is no meaning to continue.
-		logging.Error("Cannot load config file from cache",
-			"func", "cmdDel",
-			"err", err)
-		return nil
-	}
-
-	defer func() {
-		if err == nil && cRefPath != "" {
-			_ = utils.CleanCachedNetConf(cRefPath)
-		}
-	}()
-
-	if netConf.IPAM.Type != "" {
-		err = ipam.ExecDel(netConf.IPAM.Type, args.StdinData)
-		if err != nil {
-			return err
-		}
-	}
-
 	// https://github.com/kubernetes/kubernetes/pull/35240
 	if args.Netns == "" {
 		return nil
 	}
 
-	// Verify VF ID existence.
-	if _, err := utils.GetVfid(netConf.DeviceID, netConf.Master); err != nil {
-		return fmt.Errorf("cmdDel() error obtaining VF ID: %q", err)
+	netConf, cRefPath, err := config.LoadConfFromCache(args)
+	if err != nil {
+		return err
 	}
+
+	defer func() {
+		if err == nil && cRefPath != "" {
+			utils.CleanCachedNetConf(cRefPath)
+		}
+	}()
 
 	sm := sriov.NewSriovManager()
 
-	/* ResetVFConfig resets a VF administratively. We must run ResetVFConfig
-	   before ReleaseVF because some drivers will error out if we try to
-	   reset netdev VF with trust off. So, reset VF MAC address via PF first.
-	*/
-	if err := sm.ResetVFConfig(netConf); err != nil {
-		return fmt.Errorf("cmdDel() error reseting VF: %q", err)
-	}
-
 	if !netConf.DPDKMode {
+		if netConf.IPAM.Type != "" {
+			err = ipam.ExecDel(netConf.IPAM.Type, args.StdinData)
+			if err != nil {
+				return err
+			}
+		}
+
 		netns, err := ns.GetNS(args.Netns)
 		if err != nil {
 			// according to:
@@ -281,25 +219,37 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 		defer netns.Close()
 
-		if err = sm.ReleaseVF(netConf, args.IfName, netns); err != nil {
+		if err = sm.ReleaseVF(netConf, args.IfName, args.ContainerID, netns); err != nil {
 			return err
 		}
 	}
 
-	// Mark the pci address as released
-	logging.Debug("Mark the PCI address as released",
-		"func", "cmdDel",
-		"config.DefaultCNIDir", config.DefaultCNIDir,
-		"netConf.DeviceID", netConf.DeviceID)
-	allocator := utils.NewPCIAllocator(config.DefaultCNIDir)
-	if err = allocator.DeleteAllocatedPCI(netConf.DeviceID); err != nil {
-		return fmt.Errorf("error cleaning the pci allocation for vf pci address %s: %v", netConf.DeviceID, err)
+	if err := sm.ResetVFConfig(netConf); err != nil {
+		return fmt.Errorf("cmdDel() error reseting VF: %q", err)
 	}
-
+	if netConf.Smc {
+		// 执行 sysctl net.smc.tcp2smc=0
+		if err := exec.Command("sysctl", "net.smc.tcp2smc=0").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=0: %v", err)
+		}
+		// 如果需要，可以执行其他清理命令，例如：
+		// 执行 modprobe -r smc_diag
+		if err := exec.Command("modprobe", "-r", "smc_diag").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe -r smc_diag: %v", err)
+		}
+		// 执行 modprobe -r smc
+		if err := exec.Command("modprobe", "-r", "smc").Run(); err != nil {
+			return fmt.Errorf("failed to execute modprobe -r smc: %v", err)
+		}
+		// 执行 net.ipv6.conf.all.disable_ipv6=1
+		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=0").Run(); err != nil {
+			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+		}
+	}
 	return nil
 }
 
-func cmdCheck(_ *skel.CmdArgs) error {
+func cmdCheck(args *skel.CmdArgs) error {
 	return nil
 }
 
