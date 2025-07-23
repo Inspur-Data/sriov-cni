@@ -1,40 +1,42 @@
-name: "Push images on merge to master"
+# Workflow 名称
+name: "Build and Push Multi-Arch Image to Aliyun"
 
+# 环境变量
 env:
-  # 1. 正确分离 Registry 地址和镜像路径
   REGISTRY: registry.cn-hangzhou.aliyuncs.com
-  IMAGE_NAMESPACE: testwydimage # 你的阿里云命名空间
-  IMAGE_NAME: sriov-cni         # 你的镜像名
+  IMAGE_NAMESPACE: testwydimage
+  IMAGE_NAME: sriov-cni
 
+# 触发条件
 on:
   push:
     branches:
       - master
   workflow_dispatch:
-    inputs:
-      run_e2e:
-        description: 'Force e2e to run'
-        required: false
-        type: boolean
 
+# ===================================================================
+# 推荐添加的并发控制块
+# 作用：确保同一分支上只有一个实例在运行，新的推送会自动取消旧的运行
+# ===================================================================
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 定义作业
 jobs:
-  # 2. 合并为一个统一的构建和推送 Job
-  build-and-push-multi-arch:
+  build-and-push:
     name: Build and Push Multi-Arch Image
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04 # 建议使用更新的版本，如 22.04 或 ubuntu-latest
     steps:
       - name: Check out the repo
         uses: actions/checkout@v3
 
-      # 3. 设置 QEMU 以支持跨平台构建
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
-      # 4. 设置 Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 5. 使用正确的 Registry 地址登录
       - name: Login to Aliyun Container Registry
         uses: docker/login-action@v2
         with:
@@ -42,18 +44,15 @@ jobs:
           username: ${{ secrets.USERNAME_ALI }}
           password: ${{ secrets.PASSWORD_ALI }}
 
-      # 6. 在一个步骤中构建、推送并创建 manifest
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          # 在这里一次性指定所有目标平台
           platforms: linux/amd64,linux/arm64,linux/ppc64le
-          # buildx 会自动为这些标签创建和推送 manifest list
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          # 假设您已将多个 Dockerfile 合并为一个
-          # 如果无法合并，您可能需要考虑使用 build matrix 策略
           file: ./Dockerfile
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
