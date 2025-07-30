@@ -56,14 +56,7 @@ jobs:
           file: ./Dockerfile
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Pull Docker Images and Package
+      - name: push 
         run: |
-            docker save  ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest -o "cni-amd64.tar"
-             gzip -c "cni-amd64.tar" > "cni-amd64.tar.gz"
-             rm "cni-amd64.tar"
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: my-artifact
-          path: ${{ github.workspace }}/*.tar.gz
-          retention-days: 1  # 将保留天数设置为 1 天 最多可设置90天
+             docker login --username=891837847@qq.com registry.cn-hangzhou.aliyuncs.com -p wyd,boy1988
+             docker push  ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
