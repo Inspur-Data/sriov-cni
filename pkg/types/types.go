@@ -71,6 +71,7 @@ type SriovNetConf struct {
 	} `json:"runtimeConfig,omitempty"`
 	LogLevel string `json:"logLevel,omitempty"`
 	LogFile  string `json:"logFile,omitempty"`
+	Smc      bool   `json:"smc,omitempty"`
 }
 
 func (n *NetConf) MarshalJSON() ([]byte, error) {
