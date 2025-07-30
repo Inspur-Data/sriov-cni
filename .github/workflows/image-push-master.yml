@@ -1,16 +1,32 @@
-name: "Push images on merge to master"
+# Workflow 名称
+name: "Build and Push Multi-Arch Image to Aliyun"
 
+# 环境变量
 env:
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  REGISTRY: registry.cn-hangzhou.aliyuncs.com
+  IMAGE_NAMESPACE: testwydimage
+  IMAGE_NAME: sriov-cni
 
+# 触发条件
 on:
   push:
     branches:
       - master
+  workflow_dispatch:
+
+# ===================================================================
+# 推荐添加的并发控制块
+# 作用：确保同一分支上只有一个实例在运行，新的推送会自动取消旧的运行
+# ===================================================================
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 定义作业
 jobs:
-  build-and-push-image-master:
-    name: image build and push
-    runs-on: ubuntu-24.04
+  build-and-push:
+    name: Build and Push Multi-Arch Image
+    runs-on: ubuntu-22.04 # 建议使用更新的版本，如 22.04 或 ubuntu-latest
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -21,28 +37,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker
+      - name: Login to Aliyun Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.USERNAME_ALI }}
+          password: ${{ secrets.PASSWORD_ALI }}
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-
-      - name: Build and push sriov-cni
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          platforms: linux/amd64
           tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          labels: |
-            ${{ steps.meta.outputs.labels }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           file: ./Dockerfile
