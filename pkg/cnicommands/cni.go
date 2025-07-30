@@ -211,21 +211,28 @@ func CmdAdd(args *skel.CmdArgs) error {
 			return nil
 		})
 	}
+	logging.Debug("netConf.Smc",
+		"func", "cmdAdd",
+		"netConf.Smc", netConf.Smc)
 	if netConf.Smc {
 		// 执行 modprobe smc
 		if err := exec.Command("modprobe", "smc").Run(); err != nil {
+			fmt.Errorf("failed to execute modprobe smc: %v", err)
 			return fmt.Errorf("failed to execute modprobe smc: %v", err)
 		}
 		// 执行 modprobe smc_diag
 		if err := exec.Command("modprobe", "smc_diag").Run(); err != nil {
+			fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
 			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
 		}
 		// 执行 sysctl net.smc.tcp2smc=1
 		if err := exec.Command("sysctl", "net.smc.tcp2smc=1").Run(); err != nil {
+			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
 		// 执行 net.ipv6.conf.all.disable_ipv6=1
 		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=1").Run(); err != nil {
+			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
 
