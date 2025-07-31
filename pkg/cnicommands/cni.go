@@ -3,7 +3,6 @@ package cnicommands
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -227,24 +226,33 @@ func CmdAdd(args *skel.CmdArgs) error {
 			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
 		}
 
-		_, err := os.Stat("/proc/sys/net/smc/tcp2smc")
+		configSysctl := func(sysctl string) error {
+			output, err := exec.Command("nsenter", []string{
+				"-n/proc/1/root/" + args.Netns,
+				"sysctl", "-w", sysctl,
+			}...).CombinedOutput()
+
+			if err != nil {
+				return fmt.Errorf("can not exec nsenter %s, err: %v", output, err)
+			}
+			return nil
+		}
+		ensureSysctlFSRW, err := exec.Command("bash", "-c",
+			"mount | grep ' /proc/sys ' | grep rw || mount -o remount,rw /proc/sys").CombinedOutput()
 		if err != nil {
-			fmt.Errorf("error setting tcp2smcr: %v", err)
-			return fmt.Errorf("error setting tcp2smcr: %v", err)
+			fmt.Errorf("can not ensure sysctl fs rw permission %s, err: %v", ensureSysctlFSRW, err)
 		}
 		logging.Debug("net.smc.tcp2smc start",
 			"func", "cmdAdd")
-		err = os.WriteFile("/proc/sys/net/smc/tcp2smc", []byte("1"), 0644)
+		err = configSysctl("net.smc.tcp2smc=1")
 		if err != nil {
-			fmt.Errorf("error setting tcp2smcr: %v", err)
-			return fmt.Errorf("error setting tcp2smcr: %v", err)
+			return  err
 		}
 		logging.Debug("net.smc.tcp2smc end",
 			"func", "cmdAdd")
-		err = os.WriteFile("/proc/sys/net/ipv6/conf/all/disable_ipv6", []byte("1"), 0644)
+		err = configSysctl("net.ipv6.conf.all.disable_ipv6=1")
 		if err != nil {
-			fmt.Errorf("error setting disable_ipv6: %v", err)
-			return fmt.Errorf("error setting disable_ipv6: %v", err)
+			return  err
 		}
 
 	}
@@ -363,20 +371,20 @@ func CmdDel(args *skel.CmdArgs) error {
 	if netConf.Smc {
 		// 执行 sysctl net.smc.tcp2smc=0
 		if err := exec.Command("sysctl", "-w", "net.smc.tcp2smc=0").Run(); err != nil {
-			 fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=0: %v", err)
+			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=0: %v", err)
 		}
 		// 如果需要，可以执行其他清理命令，例如：
 		// 执行 modprobe -r smc_diag
 		if err := exec.Command("modprobe", "-r", "smc_diag").Run(); err != nil {
-			 fmt.Errorf("failed to execute modprobe -r smc_diag: %v", err)
+			fmt.Errorf("failed to execute modprobe -r smc_diag: %v", err)
 		}
 		// 执行 modprobe -r smc
 		if err := exec.Command("modprobe", "-r", "smc").Run(); err != nil {
-			 fmt.Errorf("failed to execute modprobe -r smc: %v", err)
+			fmt.Errorf("failed to execute modprobe -r smc: %v", err)
 		}
 		// 执行 net.ipv6.conf.all.disable_ipv6=1
 		if err := exec.Command("sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=0").Run(); err != nil {
-			 fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
+			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
 	}
 	return nil
