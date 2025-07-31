@@ -3,6 +3,7 @@ package cnicommands
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -226,33 +227,24 @@ func CmdAdd(args *skel.CmdArgs) error {
 			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
 		}
 
-		configSysctl := func(sysctl string) error {
-			output, err := exec.Command("nsenter", []string{
-				"-n/proc/1/root/" + args.Netns,
-				"sysctl", "-w", sysctl,
-			}...).CombinedOutput()
-
-			if err != nil {
-				return fmt.Errorf("can not exec nsenter %s, err: %v", output, err)
-			}
-			return nil
-		}
-		ensureSysctlFSRW, err := exec.Command("bash", "-c",
-			"mount | grep ' /proc/sys ' | grep rw || mount -o remount,rw /proc/sys").CombinedOutput()
+		_, err := os.Stat("/proc/sys/net/smc/tcp2smc")
 		if err != nil {
-			return fmt.Errorf("can not ensure sysctl fs rw permission %s, err: %v", ensureSysctlFSRW, err)
+			fmt.Errorf("error setting tcp2smcr: %v", err)
+			return fmt.Errorf("error setting tcp2smcr: %v", err)
 		}
 		logging.Debug("net.smc.tcp2smc start",
 			"func", "cmdAdd")
-		err = configSysctl("net.smc.tcp2smc=1")
+		err = os.WriteFile("/proc/sys/net/smc/tcp2smc", []byte("1"), 0644)
 		if err != nil {
-			return  err
+			fmt.Errorf("error setting tcp2smcr: %v", err)
+			return fmt.Errorf("error setting tcp2smcr: %v", err)
 		}
 		logging.Debug("net.smc.tcp2smc end",
 			"func", "cmdAdd")
-		err = configSysctl("net.ipv6.conf.all.disable_ipv6=1")
+		err = os.WriteFile("/proc/sys/net/ipv6/conf/all/disable_ipv6", []byte("1"), 0644)
 		if err != nil {
-			return  err
+			fmt.Errorf("error setting disable_ipv6: %v", err)
+			return fmt.Errorf("error setting disable_ipv6: %v", err)
 		}
 
 	}
