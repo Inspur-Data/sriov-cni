@@ -226,12 +226,16 @@ func CmdAdd(args *skel.CmdArgs) error {
 			return fmt.Errorf("failed to execute modprobe smc_diag: %v", err)
 		}
 		// 执行 sysctl net.smc.tcp2smc=1
-		if err := exec.Command("sysctl", "net.smc.tcp2smc=1").Run(); err != nil {
+		logging.Debug("net.smc.tcp2smc start",
+			"func", "cmdAdd")
+		if err := exec.Command("sysctl", "-w", "net.smc.tcp2smc=1").Run(); err != nil {
 			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
+		logging.Debug("net.smc.tcp2smc end",
+			"func", "cmdAdd")
 		// 执行 net.ipv6.conf.all.disable_ipv6=1
-		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=1").Run(); err != nil {
+		if err := exec.Command("sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=1").Run(); err != nil {
 			fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 			return fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
@@ -351,7 +355,7 @@ func CmdDel(args *skel.CmdArgs) error {
 	}
 	if netConf.Smc {
 		// 执行 sysctl net.smc.tcp2smc=0
-		if err := exec.Command("sysctl", "net.smc.tcp2smc=0").Run(); err != nil {
+		if err := exec.Command("sysctl", "-w", "net.smc.tcp2smc=0").Run(); err != nil {
 			 fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=0: %v", err)
 		}
 		// 如果需要，可以执行其他清理命令，例如：
@@ -364,7 +368,7 @@ func CmdDel(args *skel.CmdArgs) error {
 			 fmt.Errorf("failed to execute modprobe -r smc: %v", err)
 		}
 		// 执行 net.ipv6.conf.all.disable_ipv6=1
-		if err := exec.Command("sysctl", "net.ipv6.conf.all.disable_ipv6=0").Run(); err != nil {
+		if err := exec.Command("sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=0").Run(); err != nil {
 			 fmt.Errorf("failed to execute sysctl net.smc.tcp2smc=1: %v", err)
 		}
 	}
